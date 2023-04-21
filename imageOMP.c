@@ -3,7 +3,7 @@
 #include <time.h>
 #include <string.h>
 #include "image.h"
-#include <pthread.h>
+#include <omp.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -11,8 +11,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-pthread_mutex_t mutex;
-pthread_barrier_t barrier;
 //An array of kernel matrices to be used for image convolution.  
 //The indexes of these match the enumeration from the header file. ie. algorithms[BLUR] returns the kernel corresponding to a box blur.
 Matrix algorithms[]={
@@ -79,21 +77,25 @@ void convolute(Image* srcImage,Image* destImage,Matrix algorithm){
     }
 }
 
-void *convolute_threaded(void *arg){
-	my_args* args = (my_args*)arg;
-	int local_height = (args->srcImage->height)/args->thread_count * args->rank + (args->srcImage->height)/args->thread_count;
-	int local_row = args->rank * (args->srcImage->height)/args->thread_count;
+void convolute_OMP(Image* srcImage,Image* destImage,Matrix algorithm){
+    int row,pix,bit,span;
 
-	int row, pix, bit, span;
-    span=args->srcImage->bpp*args->srcImage->bpp;
-    for (row = local_row;row<local_height;row++){
-        for (pix = 0;pix<args->srcImage->width;pix++){
-			for(bit=0;bit<args->srcImage->bpp;bit++){
-				args->destImage->data[Index(pix,row,args->srcImage->width,bit,args->srcImage->bpp)]=getPixelValue(args->srcImage,pix,row,bit,args->algorithm);
+	int rank = omp_get_thread_num();
+	int thread_count = omp_get_num_threads();
+
+	int local_height = (srcImage->height)/thread_count * rank + (srcImage->height)/thread_count;
+	int local_row = rank * (srcImage->height)/thread_count;
+
+    span=srcImage->bpp*srcImage->bpp;
+    for (row=local_row;row<local_height;row++){
+        for (pix=0;pix<srcImage->width;pix++){
+            for (bit=0;bit<srcImage->bpp;bit++){
+                destImage->data[Index(pix,row,srcImage->width,bit,srcImage->bpp)]=getPixelValue(srcImage,pix,row,bit,algorithm);
             }
         }
     }
 }
+
 
 //Usage: Prints usage information for the program
 //Returns: -1
@@ -125,8 +127,6 @@ int main(int argc,char** argv){
 	if (argc == 4){
 		thread_count = strtol(argv[3], NULL, 10);
 	}
-	pthread_t threads[thread_count];
-	pthread_mutex_init(&mutex, NULL);
 
     stbi_set_flip_vertically_on_load(0); 
     if (argc < 3) return Usage();
@@ -148,23 +148,11 @@ int main(int argc,char** argv){
     destImage.data=malloc(sizeof(uint8_t)*destImage.width*destImage.bpp*destImage.height);
 
 	//thread calls
-	my_args *args_array = malloc(thread_count * sizeof(my_args));
-	for (int i = 0; i<thread_count; i++){
-			args_array[i] = (my_args) {
-            .srcImage = &srcImage,
-            .destImage = &destImage,
-            .rank = i,
-            .thread_count = thread_count,
-            .algorithm = algorithms[type]
-        	};
-    	pthread_create(&threads[i], NULL, convolute_threaded, &args_array[i]);
-	}
-	for (int i = 0; i < thread_count; i++) {
-		pthread_join(threads[i], NULL);
-	}
-	free(args_array);
+	#pragma omp parallel num_threads(thread_count)
+	convolute_OMP(&srcImage, &destImage, algorithms[type]);
+	#pragma omp barrier
+	#pragma omp single
 
-	pthread_mutex_destroy(&mutex);
 	t2=time(NULL);
     printf("Took %f seconds\n",t2-t1);
 

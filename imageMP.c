@@ -3,7 +3,6 @@
 #include <time.h>
 #include <string.h>
 #include "image.h"
-#include <pthread.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -11,8 +10,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-pthread_mutex_t mutex;
-pthread_barrier_t barrier;
 //An array of kernel matrices to be used for image convolution.  
 //The indexes of these match the enumeration from the header file. ie. algorithms[BLUR] returns the kernel corresponding to a box blur.
 Matrix algorithms[]={
@@ -23,14 +20,6 @@ Matrix algorithms[]={
     {{-2,-1,0},{-1,1,1},{0,1,2}},
     {{0,0,0},{0,1,0},{0,0,0}}
 };
-
-typedef struct {
-	Image* srcImage;
-	Image* destImage;
-	int rank;
-	int thread_count;
-	double (*algorithm)[3];
-}my_args;
 
 
 //getPixelValue - Computes the value of a specific pixel on a specific channel using the selected convolution kernel
@@ -79,22 +68,6 @@ void convolute(Image* srcImage,Image* destImage,Matrix algorithm){
     }
 }
 
-void *convolute_threaded(void *arg){
-	my_args* args = (my_args*)arg;
-	int local_height = (args->srcImage->height)/args->thread_count * args->rank + (args->srcImage->height)/args->thread_count;
-	int local_row = args->rank * (args->srcImage->height)/args->thread_count;
-
-	int row, pix, bit, span;
-    span=args->srcImage->bpp*args->srcImage->bpp;
-    for (row = local_row;row<local_height;row++){
-        for (pix = 0;pix<args->srcImage->width;pix++){
-			for(bit=0;bit<args->srcImage->bpp;bit++){
-				args->destImage->data[Index(pix,row,args->srcImage->width,bit,args->srcImage->bpp)]=getPixelValue(args->srcImage,pix,row,bit,args->algorithm);
-            }
-        }
-    }
-}
-
 //Usage: Prints usage information for the program
 //Returns: -1
 int Usage(){
@@ -117,19 +90,11 @@ enum KernelTypes GetKernelType(char* type){
 //main:
 //argv is expected to take 2 arguments.  First is the source file name (can be jpg, png, bmp, tga).  Second is the lower case name of the algorithm.
 int main(int argc,char** argv){
-    double t1,t2;
-	t1 = time(NULL);
-
-	//thread setup
-	int thread_count = 1;
-	if (argc == 4){
-		thread_count = strtol(argv[3], NULL, 10);
-	}
-	pthread_t threads[thread_count];
-	pthread_mutex_init(&mutex, NULL);
+    long t1,t2;
+    t1=time(NULL);
 
     stbi_set_flip_vertically_on_load(0); 
-    if (argc < 3) return Usage();
+    if (argc!=3) return Usage();
     char* fileName=argv[1];
     if (!strcmp(argv[1],"pic4.jpg")&&!strcmp(argv[2],"gauss")){
         printf("You have applied a gaussian filter to Gauss which has caused a tear in the time-space continum.\n");
@@ -146,32 +111,12 @@ int main(int argc,char** argv){
     destImage.height=srcImage.height;
     destImage.width=srcImage.width;
     destImage.data=malloc(sizeof(uint8_t)*destImage.width*destImage.bpp*destImage.height);
-
-	//thread calls
-	my_args *args_array = malloc(thread_count * sizeof(my_args));
-	for (int i = 0; i<thread_count; i++){
-			args_array[i] = (my_args) {
-            .srcImage = &srcImage,
-            .destImage = &destImage,
-            .rank = i,
-            .thread_count = thread_count,
-            .algorithm = algorithms[type]
-        	};
-    	pthread_create(&threads[i], NULL, convolute_threaded, &args_array[i]);
-	}
-	for (int i = 0; i < thread_count; i++) {
-		pthread_join(threads[i], NULL);
-	}
-	free(args_array);
-
-	pthread_mutex_destroy(&mutex);
-	t2=time(NULL);
-    printf("Took %f seconds\n",t2-t1);
-
+    convolute(&srcImage,&destImage,algorithms[type]);
     stbi_write_png("output.png",destImage.width,destImage.height,destImage.bpp,destImage.data,destImage.bpp*destImage.width);
     stbi_image_free(srcImage.data);
+    
     free(destImage.data);
-    //t2=time(NULL);
-    //printf("Took %f seconds\n",t2-t1);
+    t2=time(NULL);
+    printf("Took %ld seconds\n",t2-t1);
    return 0;
 }
